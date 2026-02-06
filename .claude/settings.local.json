@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"c:\\\\Users\\\\Shahid\\\\Desktop\\\\alisha\\\\Atlas-Ai\\\\.venv\\\\Scripts\\\\python.exe\" -c:*)",
+      "Bash(\"c:\\\\Users\\\\Shahid\\\\Desktop\\\\alisha\\\\Atlas-Ai\\\\.venv\\\\Scripts\\\\pip.exe\" list)",
+      "Bash(\".venv\\\\Scripts\\\\python.exe\":*)",
+      "Bash(\".venv\\\\Scripts\\\\python.exe\" -c \"import sys; sys.path.insert\\(0, ''.''\\); from backend.command_handler import CommandHandler; ch = CommandHandler\\(\\); print\\(''CommandHandler instantiated OK''\\); print\\(''Command catalog has'', len\\(ch.get_command_catalog\\(\\)\\), ''categories''\\)\")",
+      "Bash(\".venv\\\\Scripts\\\\python.exe\" -c \"import ast; [ast.parse\\(open\\(f, encoding=''utf-8''\\).read\\(\\)\\) for f in [''backend/command_handler.py'', ''backend/desktop_automation.py'', ''frontend/app.py'']]; print\\(''All modified files parse OK''\\)\")"
+    ]
+  }
+}

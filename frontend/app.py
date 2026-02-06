@@ -320,7 +320,7 @@ def handle_recognized_text(text: str) -> None:
     # These commands are handled before anything else so that Nova stops
     # talking the moment you say them.
     lower_text = text.lower()
-    tts: TextToSpeech | None = st.session_state.tts
+    tts = st.session_state.tts  # type: TextToSpeech or None
 
     if any(phrase in lower_text for phrase in ["stop", "chup ho jao"]):
         # Stop current speech and mute future responses until the user says
@@ -698,8 +698,43 @@ def main() -> None:
             st.success("History cleared!")
         
         st.markdown("---")
+        with st.expander("⚙️ Settings"):
+            # Voice Speed
+            current_rate = 140
+            if "voice_rate" not in st.session_state:
+                st.session_state.voice_rate = current_rate
+            
+            new_rate = st.slider("Voice Speed", 100, 300, st.session_state.voice_rate, step=10)
+            if new_rate != st.session_state.voice_rate:
+                st.session_state.voice_rate = new_rate
+                if st.session_state.tts:
+                    st.session_state.tts.set_rate(new_rate)
+
+            # Voice Volume
+            current_volume = 0.95
+            if "voice_volume" not in st.session_state:
+                st.session_state.voice_volume = current_volume
+            
+            new_volume = st.slider("Voice Volume", 0.0, 1.0, st.session_state.voice_volume, step=0.05)
+            if new_volume != st.session_state.voice_volume:
+                st.session_state.voice_volume = new_volume
+                if st.session_state.tts:
+                    st.session_state.tts.set_volume(new_volume)
+
+            # AI Model
+            models = ["llama-3.1-8b-instant", "llama-3.1-70b-versatile", "mixtral-8x7b-32768", "gemma-7b-it"]
+            if "ai_model" not in st.session_state:
+                st.session_state.ai_model = models[0]
+            
+            new_model = st.selectbox("AI Model", models, index=models.index(st.session_state.ai_model) if st.session_state.ai_model in models else 0)
+            if new_model != st.session_state.ai_model:
+                st.session_state.ai_model = new_model
+                if st.session_state.groq_client:
+                    st.session_state.groq_client.current_model = new_model
+
+        st.markdown("---")
         st.header("📋 Available Commands")
-        handler: CommandHandler | None = st.session_state.command_handler
+        handler = st.session_state.command_handler
         if handler is not None:
             catalog = handler.get_command_catalog()
             current_category = None

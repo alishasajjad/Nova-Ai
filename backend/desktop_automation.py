@@ -128,10 +128,25 @@ class DesktopAutomation:
 
     # --- Active-window keyboard-style automation (works on whichever window is focused) ---
 
+    def get_active_window_title(self) -> Optional[str]:
+        """Get the title of the currently active window."""
+        try:
+            import pygetwindow as gw
+            window = gw.getActiveWindow()
+            if window:
+                return window.title
+            return None
+        except Exception:
+            # Fallback or if pygetwindow fails/is not installed
+            return None
+
     def select_all_in_active_window(self) -> str:
         """Select everything in the currently active window (Ctrl+A)."""
         try:
+            title = self.get_active_window_title()
             pyautogui.hotkey("ctrl", "a")
+            if title:
+                return f"Selecting everything in '{title}'"
             return "Selecting everything in the active window"
         except Exception as e:
             return f"Sorry, I couldn't select everything. Error: {e}"
@@ -139,7 +154,10 @@ class DesktopAutomation:
     def delete_selection_in_active_window(self) -> str:
         """Delete the currently selected items/text (Delete key)."""
         try:
+            title = self.get_active_window_title()
             pyautogui.press("delete")
+            if title:
+                return f"Deleting selection in '{title}'"
             return "Deleting the current selection in the active window"
         except Exception as e:
             return f"Sorry, I couldn't delete the selection. Error: {e}"
@@ -147,12 +165,12 @@ class DesktopAutomation:
     def close_active_window(self) -> str:
         """
         Close the currently active window using the standard Alt+F4 shortcut.
-
-        This is intentionally generic so it works for Recycle Bin, Notepad,
-        Chrome, or any other focused app without needing window handles.
         """
         try:
+            title = self.get_active_window_title()
             pyautogui.hotkey("alt", "f4")
+            if title:
+                return f"Closing window: {title}"
             return "Closing the active window"
         except Exception as e:
             return f"Sorry, I couldn't close the active window. Error: {e}"
@@ -163,11 +181,20 @@ class DesktopAutomation:
 
         This is primarily used for hands-free typing in text editors like
         Notepad, but it works anywhere the cursor is focused in a text field.
+
+        Uses clipboard-based paste (Ctrl+V) when pyperclip is available so
+        that Unicode / Urdu text is fully supported.  Falls back to
+        pyautogui.typewrite for ASCII-only environments.
         """
         try:
             if not text:
                 return "No text provided to type in the active window"
-            pyautogui.typewrite(text)
+            if pyperclip is not None:
+                pyperclip.copy(text)
+                time.sleep(0.05)
+                pyautogui.hotkey("ctrl", "v")
+            else:
+                pyautogui.typewrite(text)
             return f"Typing in the active window: {text}"
         except Exception as e:
             return f"Sorry, I couldn't type in the active window. Error: {e}"
@@ -261,7 +288,7 @@ class DesktopAutomation:
 
         Implementation:
         - Ctrl+L to focus the address bar
-        - Type the query
+        - Paste the query (clipboard for Unicode support)
         - Press Enter
         """
         try:
@@ -270,7 +297,12 @@ class DesktopAutomation:
 
             pyautogui.hotkey("ctrl", "l")
             time.sleep(0.1)
-            pyautogui.typewrite(query)
+            if pyperclip is not None:
+                pyperclip.copy(query)
+                time.sleep(0.05)
+                pyautogui.hotkey("ctrl", "v")
+            else:
+                pyautogui.typewrite(query)
             time.sleep(0.1)
             pyautogui.press("enter")
             return f"Searching in the active browser window: {query}"
@@ -435,7 +467,7 @@ class DesktopAutomation:
 
     # --- Mouse and scroll helpers for screen-aware control --------------------
 
-    def scroll_down(self, amount: int = 800) -> str:
+    def scroll_down(self, amount: int = 5) -> str:
         """Scroll down in the active window by a reasonable amount."""
         try:
             pyautogui.scroll(-abs(amount))
@@ -443,7 +475,7 @@ class DesktopAutomation:
         except Exception as e:
             return f"Sorry, I couldn't scroll down. Error: {e}"
 
-    def scroll_up(self, amount: int = 800) -> str:
+    def scroll_up(self, amount: int = 5) -> str:
         """Scroll up in the active window by a reasonable amount."""
         try:
             pyautogui.scroll(abs(amount))

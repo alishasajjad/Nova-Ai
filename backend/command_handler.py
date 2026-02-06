@@ -9,11 +9,12 @@ This version is extended for Atlas:
 
 import os
 import re
+import shutil
 import webbrowser
 import pywhatkit as pwt
 from datetime import datetime
 import subprocess
-from typing import Optional
+from typing import Optional, List
 
 from .desktop_automation import DesktopAutomation
 
@@ -35,18 +36,24 @@ class CommandHandler:
             "youtube": self.search_youtube,
         }
         self.desktop = DesktopAutomation()
-        # Lightweight in-memory context about which app/window Atlas last
-        # explicitly opened for the user. This enables natural follow-up
-        # commands like "search this on Chrome" or "save this" in Notepad
-        # without the user having to repeat the application name.
-        #
-        # Values are simple identifiers such as:
-        # - "chrome"
-        # - "notepad"
-        # - "recycle_bin"
         self.active_app: Optional[str] = None
-        # Optional extra details (e.g. active Chrome profile name)
         self.active_profile: Optional[str] = None
+
+    def _find_app_path(self, exe_names: List[str], common_full_paths: List[str] = None) -> Optional[str]:
+        """Helper to find an application executable dynamically."""
+        # 1. Check PATH for executable names
+        for exe in exe_names:
+            found = shutil.which(exe)
+            if found:
+                return found
+        
+        # 2. Check common absolute paths
+        if common_full_paths:
+            for raw_path in common_full_paths:
+                path = os.path.expandvars(os.path.expanduser(raw_path))
+                if os.path.exists(path):
+                    return path
+        return None
 
     # -------------------------------------------------------------------------
     # Internal helpers for context tracking
@@ -87,19 +94,19 @@ class CommandHandler:
     def open_chrome(self):
         """Open Google Chrome browser."""
         try:
-            # Try different Chrome paths on Windows
-            chrome_paths = [
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-                os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
-            ]
+            exe_path = self._find_app_path(
+                ["chrome.exe", "chrome"],
+                [
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                    r"~\AppData\Local\Google\Chrome\Application\chrome.exe"
+                ]
+            )
 
-            for path in chrome_paths:
-                if os.path.exists(path):
-                    os.startfile(path)
-                    # Remember that Chrome is now the active application context
-                    self._set_active_app("chrome")
-                    return "Opening Google Chrome"
+            if exe_path:
+                subprocess.Popen([exe_path])
+                self._set_active_app("chrome")
+                return "Opening Google Chrome"
 
             # Fallback: try to open with default browser
             webbrowser.open("https://www.google.com")
@@ -110,7 +117,7 @@ class CommandHandler:
     def open_notepad(self):
         """Open Notepad application."""
         try:
-            os.system("notepad.exe")
+            subprocess.Popen(["notepad.exe"])
             # Treat Notepad as the active editing context
             self._set_active_app("notepad")
             return "Opening Notepad"
@@ -139,17 +146,22 @@ class CommandHandler:
     def open_word(self):
         """Open Microsoft Word (best-effort path resolution)."""
         try:
-            # Common installation paths for Office 365 / 2019+; fall back to 'start winword'
-            word_paths = [
-                r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
-                r"C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE",
-            ]
-            for path in word_paths:
-                if os.path.exists(path):
-                    os.startfile(path)
-                    self._set_active_app("word")
-                    return "Opening Microsoft Word"
+            exe_path = self._find_app_path(
+                ["WINWORD.EXE", "winword"],
+                [
+                    r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+                    r"C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE",
+                    r"C:\Program Files\Microsoft Office\Office16\WINWORD.EXE",
+                    r"C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE"
+                ]
+            )
 
+            if exe_path:
+                os.startfile(exe_path)
+                self._set_active_app("word")
+                return "Opening Microsoft Word"
+            
+            # Fallback
             subprocess.Popen(["start", "winword"], shell=True)
             self._set_active_app("word")
             return "Opening Microsoft Word"
@@ -159,16 +171,22 @@ class CommandHandler:
     def open_excel(self):
         """Open Microsoft Excel (best-effort path resolution)."""
         try:
-            excel_paths = [
-                r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
-                r"C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE",
-            ]
-            for path in excel_paths:
-                if os.path.exists(path):
-                    os.startfile(path)
-                    self._set_active_app("excel")
-                    return "Opening Microsoft Excel"
+            exe_path = self._find_app_path(
+                ["EXCEL.EXE", "excel"],
+                [
+                    r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
+                    r"C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE",
+                    r"C:\Program Files\Microsoft Office\Office16\EXCEL.EXE",
+                    r"C:\Program Files (x86)\Microsoft Office\Office16\EXCEL.EXE"
+                ]
+            )
 
+            if exe_path:
+                os.startfile(exe_path)
+                self._set_active_app("excel")
+                return "Opening Microsoft Excel"
+            
+            # Fallback
             subprocess.Popen(["start", "excel"], shell=True)
             self._set_active_app("excel")
             return "Opening Microsoft Excel"
@@ -178,16 +196,22 @@ class CommandHandler:
     def open_powerpoint(self):
         """Open Microsoft PowerPoint (best-effort path resolution)."""
         try:
-            ppt_paths = [
-                r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
-                r"C:\Program Files (x86)\Microsoft Office\root\Office16\POWERPNT.EXE",
-            ]
-            for path in ppt_paths:
-                if os.path.exists(path):
-                    os.startfile(path)
-                    self._set_active_app("powerpoint")
-                    return "Opening Microsoft PowerPoint"
+            exe_path = self._find_app_path(
+                ["POWERPNT.EXE", "powerpnt"],
+                [
+                    r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
+                    r"C:\Program Files (x86)\Microsoft Office\root\Office16\POWERPNT.EXE",
+                    r"C:\Program Files\Microsoft Office\Office16\POWERPNT.EXE",
+                    r"C:\Program Files (x86)\Microsoft Office\Office16\POWERPNT.EXE"
+                ]
+            )
 
+            if exe_path:
+                os.startfile(exe_path)
+                self._set_active_app("powerpoint")
+                return "Opening Microsoft PowerPoint"
+            
+            # Fallback
             subprocess.Popen(["start", "powerpnt"], shell=True)
             self._set_active_app("powerpoint")
             return "Opening Microsoft PowerPoint"
@@ -249,7 +273,19 @@ class CommandHandler:
         - select some text
         - say "search this on Chrome"
         """
-        if self.active_app != "chrome":
+        # If we have window title access, use it for stronger context checking
+        title = self.desktop.get_active_window_title()
+        is_chrome_active = False
+        
+        if title and ("chrome" in title.lower() or "google" in title.lower()):
+            is_chrome_active = True
+        elif self.active_app == "chrome":
+            # Fallback to logical context track if title unavailable
+            is_chrome_active = True
+            
+        if not is_chrome_active:
+            # If user explicitly said "search this on Chrome", we can try to
+            # activate Chrome, but for now let's just warn or try fallback.
             return "Chrome is not the active window right now."
 
         selected = self.desktop.get_selected_text_from_active_window()
@@ -553,12 +589,13 @@ class CommandHandler:
         ):
             return self.get_date()
 
-        # Check for Chrome command
-        if any(word in text_lower for word in ["open chrome", "chrome", "google chrome"]):
+        # Check for Chrome command (require "open" intent to avoid matching
+        # "close chrome", "search on chrome", etc.)
+        if any(word in text_lower for word in ["open chrome", "open google chrome", "google chrome", "chrome kholo", "chrome khol do"]):
             return self.open_chrome()
 
-        # Check for Notepad command
-        if any(word in text_lower for word in ["open notepad", "notepad"]):
+        # Check for Notepad command (require "open" intent to avoid matching "close notepad")
+        if any(word in text_lower for word in ["open notepad", "notepad kholo", "notepad khol do"]):
             return self.open_notepad()
 
         # Check for Microsoft Office applications
@@ -807,10 +844,11 @@ class CommandHandler:
                 if cleaned_suffix:
                     return self._type_in_active_editor(cleaned_suffix)
 
-        # Create a new document/tab in the active editor, e.g. Notepad / Word / Excel / PowerPoint.
+        # Create a new document in the active editor, e.g. Notepad / Word / Excel / PowerPoint.
+        # NOTE: "new tab" / "open new tab" are handled in the browser tab section below.
         # Examples:
-        # - "open new tab"
         # - "new file"
+        # - "naya file"
         if any(
             phrase in text_lower
             for phrase in ["open new tab", "new tab", "new file"]
