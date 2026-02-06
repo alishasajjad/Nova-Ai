@@ -73,39 +73,52 @@ class VoiceRecognizer:
         
         def audio_capture_thread():
             """Thread function to continuously capture audio."""
-            with self.microphone as source:
-                while self.is_listening:
-                    try:
-                        if status_callback:
-                            status_callback("listening")
+            # Create a new microphone instance for this thread to avoid 
+            # 'already inside a context manager' errors if the previous thread 
+            # hasn't fully cleaned up yet.
+            mic_source = sr.Microphone()
+            
+            # Optional: We might want to adjust for ambient noise again or copy threshold
+            # But the recognizer instance persists, so energy_threshold is preserved.
+            
+            try:
+                with mic_source as source:
+                    while self.is_listening:
+                        try:
+                            if status_callback:
+                                status_callback("listening")
 
-                        # Let the recognizer listen until it detects a phrase
-                        # based on ambient noise and internal VAD, without a
-                        # fixed phrase_time_limit so the user can speak
-                        # naturally and pause briefly.
-                        audio = self.recognizer.listen(source)
+                            # Let the recognizer listen until it detects a phrase
+                            # based on ambient noise and internal VAD.
+                            audio = self.recognizer.listen(source)
 
-                        if status_callback:
-                            status_callback("processing")
+                            if status_callback:
+                                status_callback("processing")
 
-                        # Recognize speech
-                        text = self.recognize_audio(audio)
+                            # Recognize speech
+                            text = self.recognize_audio(audio)
 
-                        if text:
-                            callback(text)
+                            if text:
+                                callback(text)
 
-                    except sr.WaitTimeoutError:
-                        # Timeout is normal, continue listening
-                        continue
-                    except Exception as e:
-                        if status_callback:
-                            status_callback(f"error: {str(e)}")
-                        print(f"Error in audio capture: {e}")
-                        continue
-        
-        # Start the recognition thread
-        self.recognition_thread = threading.Thread(target=audio_capture_thread, daemon=True)
-        self.recognition_thread.start()
+                        except sr.WaitTimeoutError:
+                            continue
+                        except Exception as e:
+                            # Catch network/socket errors like WinError 10060
+                            error_msg = str(e)
+                            if status_callback:
+                                status_callback(f"error: {error_msg}")
+                            print(f"Error in audio capture: {e}")
+                            # Don't crash the loop on transient network errors
+                            continue
+            except Exception as e:
+                # This catches errors entering the 'with' block
+                print(f"Critical error opening microphone: {e}")
+                if status_callback:
+                    status_callback(f"error: Critical mic failure - {e}")
+            finally:
+                # Ensure we reset listening state if the thread dies
+                self.is_listening = False
     
     def stop_listening(self):
         """Stop the continuous listening process."""
