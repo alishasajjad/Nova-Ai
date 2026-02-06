@@ -100,6 +100,20 @@ class TextToSpeech:
         # Also stop anything that is currently being spoken.
         self.stop()
 
+    def set_rate(self, rate: int):
+        """Set the speech rate (speed). Default is around 200, we use 140."""
+        try:
+            self.engine.setProperty("rate", rate)
+        except Exception as e:
+            print(f"Error setting rate: {e}")
+
+    def set_volume(self, volume: float):
+        """Set the volume level (0.0 to 1.0)."""
+        try:
+            self.engine.setProperty("volume", volume)
+        except Exception as e:
+            print(f"Error setting volume: {e}")
+
     def unmute(self):
         """Allow Nova to speak responses again."""
         self.muted = False

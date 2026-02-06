@@ -29,6 +29,7 @@ class GroqClient:
             )
         
         self.client = Groq(api_key=api_key)
+        self.current_model = "llama-3.1-8b-instant"
         self.conversation_history: List[Dict[str, str]] = []
     
     def chat(self, user_message, max_tokens=150):
@@ -138,7 +139,7 @@ class GroqClient:
 
             completion = self.client.chat.completions.create(
                 messages=messages,
-                model="llama-3.1-8b-instant",
+                model=getattr(self, "current_model", "llama-3.1-8b-instant"),
                 max_tokens=max_tokens,
                 temperature=0.7,
                 top_p=1,
