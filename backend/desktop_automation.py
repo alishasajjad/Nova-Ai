@@ -467,7 +467,7 @@ class DesktopAutomation:
 
     # --- Mouse and scroll helpers for screen-aware control --------------------
 
-    def scroll_down(self, amount: int = 5) -> str:
+    def scroll_down(self, amount: int = 800) -> str:
         """Scroll down in the active window by a reasonable amount."""
         try:
             pyautogui.scroll(-abs(amount))
@@ -475,7 +475,7 @@ class DesktopAutomation:
         except Exception as e:
             return f"Sorry, I couldn't scroll down. Error: {e}"
 
-    def scroll_up(self, amount: int = 5) -> str:
+    def scroll_up(self, amount: int = 800) -> str:
         """Scroll up in the active window by a reasonable amount."""
         try:
             pyautogui.scroll(abs(amount))
@@ -544,18 +544,20 @@ class DesktopAutomation:
     def shutdown(self) -> str:
         """Shut down the computer immediately."""
         try:
-            subprocess.Popen(["shutdown", "/s", "/t", "0"], shell=True)
-            return "Shutting down the computer"
+            # Use subprocess.run to ensure command executes
+            subprocess.run(["shutdown", "/s", "/t", "0"], shell=True, check=False)
+            return "Shutting down the computer now"
         except Exception as e:
-            return f"Sorry, I couldn't shut down the computer. Error: {e}"
+            return f"Error shutting down computer: {str(e)}"
 
     def restart(self) -> str:
         """Restart the computer immediately."""
         try:
-            subprocess.Popen(["shutdown", "/r", "/t", "0"], shell=True)
-            return "Restarting the computer"
+            # Use subprocess.run to ensure command executes
+            subprocess.run(["shutdown", "/r", "/t", "0"], shell=True, check=False)
+            return "Restarting the computer now"
         except Exception as e:
-            return f"Sorry, I couldn't restart the computer. Error: {e}"
+            return f"Error restarting computer: {str(e)}"
 
     def sleep(self) -> str:
         """Put the computer to sleep."""

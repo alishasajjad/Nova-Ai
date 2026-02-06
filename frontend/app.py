@@ -391,26 +391,310 @@ def handle_recognized_text(text: str) -> None:
             if cmd_result == "SYSTEM_SHUTDOWN_REQUEST":
                 st.session_state.pending_system_action = "shutdown"
                 response = (
-                    "Boss, kya aap waqai system shutdown karwana chahte hain? "
-                    "Please bolen: 'haan' ya 'nahi'."
+                    "You requested a system shutdown. "
+                    "This is a critical action. Please confirm by saying 'yes' to proceed or 'no' to cancel."
                 )
             elif cmd_result == "SYSTEM_RESTART_REQUEST":
                 st.session_state.pending_system_action = "restart"
                 response = (
-                    "Boss, system restart kar doon? "
-                    "Agar haan to bolen 'haan', warna 'nahi'."
+                    "You requested a system restart. "
+                    "Please confirm by saying 'yes' to proceed or 'no' to cancel."
                 )
             elif cmd_result == "SYSTEM_SLEEP_REQUEST":
                 st.session_state.pending_system_action = "sleep"
                 response = (
-                    "Boss, system ko sleep mode mein daal doon? "
-                    "Please confirm: 'haan' ya 'nahi'."
+                    "You requested to put the system to sleep. "
+                    "Please confirm by saying 'yes' to proceed or 'no' to cancel."
                 )
             elif cmd_result is not None:
-                lower_text = text.lower()
-                lang = st.session_state.language_mode
+                # Command executed successfully - provide English confirmation
+                response = f"Command executed: {cmd_result}"
+        except Exception as e:
+            response = f"Error executing command: {str(e)}"
+    
+    # --- 3. Check for search commands (handle before other processing) ---
+    if response is None and "search" in lower_text:
+        try:
+            handler: CommandHandler = st.session_state.command_handler
+            if handler:
+                # Let command handler process the search command
+                cmd_result = handler.process_command(text)
+                if cmd_result and "search" in cmd_result.lower():
+                    response = cmd_result
+        except Exception as e:
+            response = f"Error processing search command: {str(e)}"
+    
+    # --- 4. If still not handled, use Groq for conversation (English only) ---
+    if response is None:
+        if st.session_state.groq_client is not None:
+            safe_update_status("thinking")
+            try:
+                # Use English-only mode
+                response = st.session_state.groq_client.chat_as_atlas(
+                    text, language_mode="english"
+                )
 
-                if any(word in lower_text for word in ["time", "waqt"]):
+                # If the user asked to "write" or "generate" content,
+                # also type the generated text directly into the active window.
+                if any(
+                    phrase in lower_text
+                    for phrase in [
+                        "write ",
+                        "generate ",
+                        "create a paragraph",
+                        "create paragraph",
+                        "type ",
+                    ]
+                ) and st.session_state.command_handler is not None:
+                    try:
+                        handler_for_typing: CommandHandler = st.session_state.command_handler
+                        handler_for_typing.desktop.type_text_in_active_window(response)
+                    except Exception as e:
+                        print(f"Error while typing generated content: {e}")
+            except Exception as e:
+                response = f"Error communicating with AI: {str(e)}"
+        else:
+            response = (
+                "The Groq AI client is not configured. "
+                "Please set GROQ_API_KEY in the `.env` file."
+            )
+
+    # 5. Record assistant response (English only)
+    st.session_state.conversation_history.append(
+        {
+            "role": "assistant",
+            "text": response,
+            "timestamp": time.strftime("%H:%M:%S"),
+        }
+    )
+
+    st.session_state.last_response = response
+    safe_update_status("responding")
+
+    # 6. Speak the response (non-blocking thread inside TextToSpeech)
+    if st.session_state.tts:
+        try:
+            st.session_state.tts.speak(response)
+        except Exception as e:
+            # Log to terminal but keep UI alive
+            print(f"Error during text-to-speech: {e}")
+
+    # 7. Return to listening or idle
+    time.sleep(0.2)
+    if st.session_state.listening:
+        safe_update_status("listening")
+    else:
+        safe_update_status("ready")
+
+
+def start_listening() -> None:
+    """
+    Start continuous voice listening.
+
+    This spins up a background thread that ONLY talks to a thread-safe queue,
+    never to st.session_state directly. The main thread then polls that queue
+    and updates the UI + state.
+    """
+    if not initialize_components():
+        return
+
+    if st.session_state.listening:
+        return
+
+    # Capture references outside the thread so it doesn't touch st.session_state.
+    voice_recognizer: VoiceRecognizer = st.session_state.voice_recognizer
+    recognized_text_queue: queue.Queue = st.session_state.recognized_text_queue
+    status_queue: queue.Queue = st.session_state.status_queue
+
+    st.session_state.listening = True
+    safe_update_status("initializing")
+
+    def on_text(recognized_text: str) -> None:
+        """Callback used INSIDE the audio thread -> send text to queue."""
+        try:
+            recognized_text_queue.put_nowait(recognized_text)
+        except Exception as e:
+            # Never crash the audio thread because of queue issues
+            print(f"Error while queuing recognized text: {e}")
+
+    def on_status(raw_status: str) -> None:
+        """Callback used INSIDE the audio thread -> send status to queue."""
+        try:
+            status_queue.put_nowait(raw_status)
+        except Exception as e:
+            print(f"Error while queuing status update: {e}")
+
+    def start_recognition() -> None:
+        """Background thread target: blocks inside listen_continuously."""
+        try:
+            voice_recognizer.listen_continuously(on_text, on_status)
+        except Exception as e:
+            # Report any unexpected errors back to main thread via status queue
+            try:
+                status_queue.put_nowait(f"error: {e}")
+            except Exception:
+                pass
+
+    # Start listening in a separate thread
+    thread = threading.Thread(target=start_recognition, daemon=True)
+    thread.start()
+
+    st.success("🎤 Voice listening started!")
+
+
+def stop_listening() -> None:
+    """Stop voice listening and cleanly shut down microphone capture."""
+    if not st.session_state.listening:
+        return
+
+    st.session_state.listening = False
+    if st.session_state.voice_recognizer:
+        try:
+            st.session_state.voice_recognizer.stop_listening()
+        except Exception as e:
+            print(f"Error while stopping voice recognizer: {e}")
+
+    safe_update_status("stopped")
+    st.info("🛑 Voice listening stopped.")
+
+
+def _drain_queues() -> None:
+    """
+    Pull all pending items from the background queues and apply them.
+
+    This function MUST be called from the main Streamlit thread.
+    """
+    recognized_text_queue: queue.Queue = st.session_state.recognized_text_queue
+    status_queue: queue.Queue = st.session_state.status_queue
+
+    # First apply all status updates (they are lightweight)
+    try:
+        while not status_queue.empty():
+            raw_status = status_queue.get_nowait()
+            safe_update_status(raw_status)
+    except Exception as e:
+        print(f"Error while draining status queue: {e}")
+
+    # Then apply all recognized text events (may trigger Groq calls)
+    try:
+        while not recognized_text_queue.empty():
+            text = recognized_text_queue.get_nowait()
+            handle_recognized_text(text)
+    except Exception as e:
+        print(f"Error while draining recognized text queue: {e}")
+
+
+def main() -> None:
+    """Main application function (UI + high-level state)."""
+    # Apply any pending updates coming from the background audio thread
+    _drain_queues()
+
+    # Ensure backend components exist so the command catalog can be shown
+    initialize_components()
+
+    # Header
+    st.title("🎤 Nova AI Voice Control Assistant")
+    st.markdown("---")
+    
+    # Sidebar for controls
+    with st.sidebar:
+        st.header("⚙️ Controls")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("▶️ Start", use_container_width=True):
+                start_listening()
+        
+        with col2:
+            if st.button("⏹️ Stop", use_container_width=True):
+                stop_listening()
+        
+        if st.button("🗑️ Clear History", use_container_width=True):
+            st.session_state.conversation_history = []
+            st.session_state.last_response = ""
+            if st.session_state.groq_client:
+                st.session_state.groq_client.reset_conversation()
+            st.success("History cleared!")
+        
+        st.markdown("---")
+        st.header("📋 Available Commands")
+        handler: CommandHandler | None = st.session_state.command_handler
+        if handler is not None:
+            catalog = handler.get_command_catalog()
+            current_category = None
+            for entry in catalog:
+                category = entry.get("category", "Other")
+                if category != current_category:
+                    if current_category is not None:
+                        st.markdown("---")
+                    st.markdown(f"**{category}**")
+                    current_category = category
+                name = entry.get("name", "")
+                desc = entry.get("description", "")
+                st.markdown(f"- **{name}**: {desc}")
+                for ex in entry.get("examples", []):
+                    st.markdown(f'  - "{ex}"')
+        else:
+            st.info("Commands will appear here once Nova is initialized.")
+    
+    # Main content area
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Status display
+        st.subheader("📊 Status")
+        status_class = "status-box"
+        if "listening" in st.session_state.status.lower():
+            status_class += " status-listening"
+        elif "processing" in st.session_state.status.lower() or "thinking" in st.session_state.status.lower():
+            status_class += " status-processing"
+        elif "responding" in st.session_state.status.lower():
+            status_class += " status-responding"
+        elif "error" in st.session_state.status.lower():
+            status_class += " status-error"
+        
+        st.markdown(
+            f'<div class="{status_class}">'
+            f'<h3>{st.session_state.status}</h3>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+        
+        # Response display
+        st.subheader("💬 Response")
+        st.markdown(
+            f'<div class="response-box">{st.session_state.last_response or "Waiting for your command..."}</div>',
+            unsafe_allow_html=True
+        )
+    
+    with col2:
+        st.subheader("📝 Conversation History")
+        if st.session_state.conversation_history:
+            # Show last 5 conversations
+            for i, msg in enumerate(st.session_state.conversation_history[-10:]):
+                if msg["role"] == "user":
+                    st.markdown(f"**You** ({msg['timestamp']}):")
+                    st.markdown(f"*{msg['text']}*")
+                else:
+                    st.markdown(f"**Nova AI** ({msg['timestamp']}):")
+                    st.markdown(msg['text'])
+                st.markdown("---")
+        else:
+            st.info("No conversation history yet.")
+    
+    # Auto-refresh to keep polling the background queues while listening
+    if st.session_state.listening:
+        st.session_state.refresh_counter += 1
+        # Refresh every 1–2 seconds to keep status and conversation live
+        time.sleep(1.5)
+        st.rerun()
+
+
+if __name__ == "__main__":
+    main()
+
+# Remove all the old Urdu code that was here
+# The following was removed and replaced with simple English responses above
                     if lang == "urdu":
                         response = f"Ji boss, abhi ka time hai: {cmd_result}"
                     else:

@@ -131,17 +131,45 @@ class CommandHandler:
         This is a best-effort helper and may require appropriate permissions.
         """
         try:
-            subprocess.Popen(["taskkill", "/IM", process_name, "/F"], shell=True)
-            # If we just closed the app that Atlas believed was active,
-            # clear the in‑memory context so follow‑ups don't target it.
+            # Use subprocess.run to ensure the command executes
+            result = subprocess.run(
+                ["taskkill", "/IM", process_name, "/F"],
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            # Clear active app context if we closed the active app
             name_lower = process_name.lower()
-            if self.active_app == "chrome" and "chrome" in name_lower:
-                self._set_active_app(None)
-            elif self.active_app == "notepad" and "notepad" in name_lower:
-                self._set_active_app(None)
-            return f"Closing application: {process_name}"
+            app_mapping = {
+                "chrome.exe": "chrome",
+                "notepad.exe": "notepad",
+                "winword.exe": "word",
+                "excel.exe": "excel",
+                "powerpnt.exe": "powerpoint"
+            }
+            for proc, app in app_mapping.items():
+                if proc in name_lower and self.active_app == app:
+                    self._set_active_app(None)
+                    break
+            
+            if result.returncode == 0:
+                return f"Successfully closed {process_name}"
+            else:
+                # Try Alt+F4 as fallback for the active window
+                if self.active_app:
+                    self.desktop.close_active_window()
+                    return f"Attempted to close {process_name}"
+                return f"Could not close {process_name}. Process may not be running."
+        except subprocess.TimeoutExpired:
+            return f"Timeout while trying to close {process_name}"
         except Exception as e:
-            return f"Sorry, I couldn't close {process_name}. Error: {e}"
+            # Fallback: try Alt+F4 to close active window
+            try:
+                self.desktop.close_active_window()
+                return f"Closed the active window (fallback method)"
+            except:
+                return f"Error closing application: {str(e)}"
 
     def open_word(self):
         """Open Microsoft Word (best-effort path resolution)."""
@@ -681,9 +709,45 @@ class CommandHandler:
         ):
             return self.open_recycle_bin()
 
+        # Close commands - check these BEFORE dialog confirmations
+        # Check for specific app close commands first (must be exact matches)
+        if "close chrome" in text_lower:
+            return self.close_application("chrome.exe")
+        
+        if "close notepad" in text_lower:
+            return self.close_application("notepad.exe")
+        
+        if "close word" in text_lower:
+            return self.close_application("WINWORD.EXE")
+        
+        if "close excel" in text_lower:
+            return self.close_application("EXCEL.EXE")
+        
+        if "close powerpoint" in text_lower:
+            return self.close_application("POWERPNT.EXE")
+
+        # Generic "close it" / "close this" / "close window" → active window close (Alt+F4)
+        if any(
+            phrase in text_lower
+            for phrase in ["close it", "close this", "close window"]
+        ):
+            # Alt+F4 will close the currently focused window. Clear our
+            # logical context so future commands don't keep referring to a
+            # window that is no longer on screen.
+            self._set_active_app(None)
+            return self.desktop.close_active_window()
+        
+        # Standalone "close" command (only if it's the only word or with context)
+        if text_lower.strip() == "close" or (text_lower.startswith("close") and len(text_lower.split()) == 1):
+            # Alt+F4 will close the currently focused window
+            self._set_active_app(None)
+            return self.desktop.close_active_window()
+
         # Generic confirmation for OS-level dialogs (e.g., delete prompts).
         # These are best-effort: we simply press Enter for yes/confirm and
         # Escape for no/cancel on the currently focused dialog.
+        # NOTE: This should NOT catch "yes" when there's a pending system action
+        # (that's handled in the frontend), but it can handle dialog confirmations.
         if any(
             phrase in text_lower
             for phrase in ["yes", "confirm", "ok", "okay"]
@@ -695,29 +759,6 @@ class CommandHandler:
             for phrase in ["no", "cancel", "abort"]
         ):
             return self.desktop.confirm_active_dialog(accept=False)
-
-        # Close Chrome / Notepad (simple process-based close)
-        if any(
-            phrase in text_lower
-            for phrase in ["close chrome"]
-        ):
-            return self.close_application("chrome.exe")
-        if any(
-            phrase in text_lower
-            for phrase in ["close notepad"]
-        ):
-            return self.close_application("notepad.exe")
-
-        # Generic "close it" / "close this" → active window close (Alt+F4)
-        if any(
-            phrase in text_lower
-            for phrase in ["close it", "close this", "close window"]
-        ):
-            # Alt+F4 will close the currently focused window. Clear our
-            # logical context so future commands don't keep referring to a
-            # window that is no longer on screen.
-            self._set_active_app(None)
-            return self.desktop.close_active_window()
 
         # Open Chrome with specific account/profile name
         if "open chrome with" in text_lower or "chrome profile" in text_lower:
@@ -960,21 +1001,24 @@ class CommandHandler:
                 return named_save_result
 
         # System power commands (these should normally be gated by confirmation in UI)
+        # Check for shutdown commands
         if any(
             phrase in text_lower
-            for phrase in ["shutdown", "shut down"]
+            for phrase in ["shutdown", "shut down", "shutdown computer", "shutdown laptop", "shut down computer", "shut down laptop"]
         ):
             return "SYSTEM_SHUTDOWN_REQUEST"
 
+        # Check for restart commands (including "restart laptop", "restart computer", etc.)
         if any(
             phrase in text_lower
-            for phrase in ["restart", "reboot"]
+            for phrase in ["restart", "reboot", "restart laptop", "restart computer", "reboot laptop", "reboot computer"]
         ):
             return "SYSTEM_RESTART_REQUEST"
 
+        # Check for sleep commands
         if any(
             phrase in text_lower
-            for phrase in ["sleep", "sleep mode"]
+            for phrase in ["sleep", "sleep mode", "put to sleep", "sleep computer", "sleep laptop"]
         ):
             return "SYSTEM_SLEEP_REQUEST"
 
