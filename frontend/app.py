@@ -480,30 +480,17 @@ def handle_recognized_text(text: str) -> None:
         except Exception as e:
             response = f"Sorry boss, command chalate hue koi masla aa gaya: {e}"
 
-    # --- 3. If not recognized, check if it's a search query ---
-    if response is None:
-        # If it looks like a search query, open Google browser
-        search_indicators = ["search for", "what is", "who is", "where is", "how to", "tell me about"]
-        if any(indicator in lower_text for indicator in search_indicators) or (
-            len(text.split()) > 2 and "?" in text
-        ):
-            # Extract search query
-            query = text
-            for indicator in search_indicators:
-                if indicator in lower_text:
-                    query = text.lower().split(indicator, 1)[-1].strip()
-                    break
-            if query:
-                try:
-                    handler: CommandHandler = st.session_state.command_handler
-                    if handler:
-                        handler.search_google(query)
-                        response = f"Opening Google search for: {query}"
-                    else:
-                        response = "Opening Google browser for your search."
-                        webbrowser.open(f"https://www.google.com/search?q={query.replace(' ', '+')}")
-                except Exception as e:
-                    response = f"Error opening search: {str(e)}"
+    # --- 3. Check for search commands (handle before other processing) ---
+    if response is None and "search" in lower_text:
+        try:
+            handler: CommandHandler = st.session_state.command_handler
+            if handler:
+                # Let command handler process the search command
+                cmd_result = handler.process_command(text)
+                if cmd_result and "search" in cmd_result.lower():
+                    response = cmd_result
+        except Exception as e:
+            response = f"Error processing search command: {str(e)}"
     
     # --- 4. If still not handled, use Groq for conversation (English only) ---
     if response is None:

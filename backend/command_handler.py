@@ -535,17 +535,35 @@ class CommandHandler:
 
     def search_google(self, query):
         """
-        Search Google with the given query.
+        Search Google with the given query in a new browser tab.
 
         Args:
             query: The search query string
         """
         try:
             search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-            webbrowser.open(search_url)
-            return f"Searching Google for {query}"
+            # Try to open Chrome with new tab, fallback to default browser
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
+            ]
+            
+            chrome_found = False
+            for path in chrome_paths:
+                if os.path.exists(path):
+                    # Open Chrome with new tab
+                    subprocess.Popen([path, "--new-tab", search_url])
+                    chrome_found = True
+                    break
+            
+            if not chrome_found:
+                # Fallback to default browser (should open in new tab)
+                webbrowser.open(search_url)
+            
+            return f"Opening Google search for: {query}"
         except Exception as e:
-            return f"Sorry, I couldn't search Google. Error: {str(e)}"
+            return f"Error opening Google search: {str(e)}"
 
     def search_youtube(self, query):
         """
@@ -589,13 +607,12 @@ class CommandHandler:
         ):
             return self.get_date()
 
-        # Check for Chrome command (require "open" intent to avoid matching
-        # "close chrome", "search on chrome", etc.)
-        if any(word in text_lower for word in ["open chrome", "open google chrome", "google chrome", "chrome kholo", "chrome khol do"]):
+        # Check for Chrome command
+        if any(word in text_lower for word in ["open chrome", "open google chrome", "google chrome"]):
             return self.open_chrome()
 
-        # Check for Notepad command (require "open" intent to avoid matching "close notepad")
-        if any(word in text_lower for word in ["open notepad", "notepad kholo", "notepad khol do"]):
+        # Check for Notepad command
+        if any(word in text_lower for word in ["open notepad", "notepad"]):
             return self.open_notepad()
 
         # Check for Microsoft Office applications
@@ -616,6 +633,44 @@ class CommandHandler:
             for phrase in ["open powerpoint", "microsoft powerpoint"]
         ):
             return self.open_powerpoint()
+
+        # Check for search commands early (but after specific app commands)
+        # This handles general "search X" commands
+        if "search" in text_lower:
+            # Skip if it's a specific command like "search this on Chrome" (handled later)
+            if not any(phrase in text_lower for phrase in [
+                "search this on chrome",
+                "search this in chrome",
+                "search selected text",
+                "search in chrome",
+                "search in browser",
+                "chrome search",
+                "browser search",
+                "search youtube",
+                "youtube"
+            ]):
+                # Extract query after 'search' keyword
+                query = None
+                
+                # Handle different patterns: "search for X", "search X", "search google for X"
+                if "search for" in text_lower:
+                    query = text_lower.split("search for", 1)[-1].strip()
+                elif "search google for" in text_lower:
+                    query = text_lower.split("search google for", 1)[-1].strip()
+                elif "search google" in text_lower:
+                    query = text_lower.split("search google", 1)[-1].strip()
+                elif text_lower.startswith("search "):
+                    query = text_lower.replace("search", "", 1).strip()
+                
+                # Clean up the query
+                if query:
+                    # Remove common filler words
+                    for filler in ["for", "about", "the", "a", "an", "please"]:
+                        if query.startswith(filler + " "):
+                            query = query[len(filler):].strip()
+                    
+                    if query and len(query) > 0:
+                        return self.search_google(query)
 
         # ------------- Extended commands (English only) ---------
 
@@ -1043,14 +1098,6 @@ class CommandHandler:
                 return self.desktop.open_file_or_folder(target)
 
         # ---------------------- Google / YouTube search ----------------------
-
-        # Check for Google search
-        if "search google for" in text_lower or "google search" in text_lower:
-            query = text_lower.replace("search google for", "").replace(
-                "google search", ""
-            ).strip()
-            if query:
-                return self.search_google(query)
 
         # Check for YouTube search
         if "search youtube for" in text_lower or "youtube" in text_lower or "play" in text_lower:
