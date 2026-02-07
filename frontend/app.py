@@ -8,6 +8,7 @@ text-to-speech, command handling, Groq client) lives
 in the backend package.
 """
 
+import html as html_module
 import os
 import sys
 import time
@@ -195,6 +196,63 @@ st.markdown("""
     ::-webkit-scrollbar-track {
         background: transparent;
     }
+
+    /* Chat history panel and message bubbles */
+    .chat-section {
+        margin-top: 1.5rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid rgba(124, 232, 255, 0.3);
+    }
+    .chat-history-container {
+        max-height: 420px;
+        overflow-y: auto;
+        padding: 12px;
+        background: rgba(10, 20, 40, 0.5);
+        border-radius: 16px;
+        border: 1px solid rgba(124, 232, 255, 0.25);
+        margin-bottom: 12px;
+    }
+    .chat-msg {
+        margin: 10px 0;
+        padding: 12px 14px;
+        border-radius: 14px;
+        line-height: 1.45;
+    }
+    .chat-msg-user {
+        background: rgba(124, 232, 255, 0.15);
+        border-left: 4px solid #7ce8ff;
+        margin-left: 0;
+        margin-right: 24px;
+    }
+    .chat-msg-assistant {
+        background: rgba(20, 50, 80, 0.5);
+        border-left: 4px solid rgba(124, 232, 255, 0.7);
+        margin-left: 24px;
+        margin-right: 0;
+    }
+    .chat-msg-badge {
+        display: inline-block;
+        font-size: 0.7rem;
+        padding: 2px 8px;
+        border-radius: 999px;
+        margin-bottom: 4px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+    .chat-msg-badge-voice {
+        background: rgba(76, 255, 76, 0.25);
+        color: #4cff4c;
+    }
+    .chat-msg-badge-text {
+        background: rgba(255, 213, 79, 0.25);
+        color: #ffd54f;
+    }
+    .chat-msg-time {
+        font-size: 0.75rem;
+        color: rgba(224, 244, 255, 0.6);
+        margin-top: 4px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -299,20 +357,18 @@ def _execute_pending_system_action() -> str:
     return "Unknown system action. Please try again."
 
 
-def handle_recognized_text(text: str) -> None:
+def handle_recognized_text(text: str, source: str = "voice") -> None:
     """
-    Handle a piece of recognized speech text in the main thread.
+    Handle a command from either voice or text chat. Runs the same pipeline:
+    pending confirmations, command handler, search, Groq fallback. All actions
+    are real system-level; responses are recorded and spoken (TTS) in English.
 
-    Flow:
-    - If there is a pending dangerous action (shutdown/restart/sleep), treat
-      the next utterance as confirmation (yes/no).
-    - Otherwise:
-      1) Try local command handler for existing English commands
-      2) If not recognized, fall back to Atlas (Groq) for Urdu-first reply
+    source: "voice" | "text" – used for chat history labeling only.
     """
-    if not text:
+    if not text or not text.strip():
         return
 
+    text = text.strip()
     st.session_state.last_command = text
     safe_update_status("processing")
 
@@ -332,6 +388,7 @@ def handle_recognized_text(text: str) -> None:
                 "role": "assistant",
                 "text": "Okay, I’ll stay quiet until you say 'speak' or 'bolo'.",
                 "timestamp": time.strftime("%H:%M:%S"),
+                "source": source,
             }
         )
         st.session_state.last_response = "Okay, I’ll stay quiet until you say 'speak' or 'bolo'."
@@ -347,6 +404,7 @@ def handle_recognized_text(text: str) -> None:
                 "role": "assistant",
                 "text": "Voice output is back on. I’ll speak my responses again.",
                 "timestamp": time.strftime("%H:%M:%S"),
+                "source": source,
             }
         )
         st.session_state.last_response = "Voice output is back on. I’ll speak my responses again."
@@ -355,12 +413,13 @@ def handle_recognized_text(text: str) -> None:
             tts.speak(st.session_state.last_response)
         return
 
-    # Add user message to conversation history
+    # Add user message to conversation history (request + source for display)
     st.session_state.conversation_history.append(
         {
             "role": "user",
             "text": text,
             "timestamp": time.strftime("%H:%M:%S"),
+            "source": source,
         }
     )
 
@@ -459,19 +518,20 @@ def handle_recognized_text(text: str) -> None:
                 "Please set GROQ_API_KEY in the `.env` file."
             )
 
-    # 5. Record assistant response (English only)
+    # 5. Record assistant response (English only) with source for history
     st.session_state.conversation_history.append(
         {
             "role": "assistant",
             "text": response,
             "timestamp": time.strftime("%H:%M:%S"),
+            "source": source,
         }
     )
 
     st.session_state.last_response = response
     safe_update_status("responding")
 
-    # 6. Speak the response (non-blocking thread inside TextToSpeech)
+    # 6. Speak the response (verbal confirmation for both voice and text commands)
     if st.session_state.tts:
         try:
             st.session_state.tts.speak(response)
@@ -480,358 +540,6 @@ def handle_recognized_text(text: str) -> None:
             print(f"Error during text-to-speech: {e}")
 
     # 7. Return to listening or idle
-    time.sleep(0.2)
-    if st.session_state.listening:
-        safe_update_status("listening")
-    else:
-        safe_update_status("ready")
-
-
-def start_listening() -> None:
-    """
-    Start continuous voice listening.
-
-    This spins up a background thread that ONLY talks to a thread-safe queue,
-    never to st.session_state directly. The main thread then polls that queue
-    and updates the UI + state.
-    """
-    if not initialize_components():
-        return
-
-    if st.session_state.listening:
-        return
-
-    # Capture references outside the thread so it doesn't touch st.session_state.
-    voice_recognizer: VoiceRecognizer = st.session_state.voice_recognizer
-    recognized_text_queue: queue.Queue = st.session_state.recognized_text_queue
-    status_queue: queue.Queue = st.session_state.status_queue
-
-    st.session_state.listening = True
-    safe_update_status("initializing")
-
-    def on_text(recognized_text: str) -> None:
-        """Callback used INSIDE the audio thread -> send text to queue."""
-        try:
-            recognized_text_queue.put_nowait(recognized_text)
-        except Exception as e:
-            # Never crash the audio thread because of queue issues
-            print(f"Error while queuing recognized text: {e}")
-
-    def on_status(raw_status: str) -> None:
-        """Callback used INSIDE the audio thread -> send status to queue."""
-        try:
-            status_queue.put_nowait(raw_status)
-        except Exception as e:
-            print(f"Error while queuing status update: {e}")
-
-    def start_recognition() -> None:
-        """Background thread target: blocks inside listen_continuously."""
-        try:
-            voice_recognizer.listen_continuously(on_text, on_status)
-        except Exception as e:
-            # Report any unexpected errors back to main thread via status queue
-            try:
-                status_queue.put_nowait(f"error: {e}")
-            except Exception:
-                pass
-
-    # Start listening in a separate thread
-    thread = threading.Thread(target=start_recognition, daemon=True)
-    thread.start()
-
-    st.success("🎤 Voice listening started!")
-
-
-def stop_listening() -> None:
-    """Stop voice listening and cleanly shut down microphone capture."""
-    if not st.session_state.listening:
-        return
-
-    st.session_state.listening = False
-    if st.session_state.voice_recognizer:
-        try:
-            st.session_state.voice_recognizer.stop_listening()
-        except Exception as e:
-            print(f"Error while stopping voice recognizer: {e}")
-
-    safe_update_status("stopped")
-    st.info("🛑 Voice listening stopped.")
-
-
-def _drain_queues() -> None:
-    """
-    Pull all pending items from the background queues and apply them.
-
-    This function MUST be called from the main Streamlit thread.
-    """
-    recognized_text_queue: queue.Queue = st.session_state.recognized_text_queue
-    status_queue: queue.Queue = st.session_state.status_queue
-
-    # First apply all status updates (they are lightweight)
-    try:
-        while not status_queue.empty():
-            raw_status = status_queue.get_nowait()
-            safe_update_status(raw_status)
-    except Exception as e:
-        print(f"Error while draining status queue: {e}")
-
-    # Then apply all recognized text events (may trigger Groq calls)
-    try:
-        while not recognized_text_queue.empty():
-            text = recognized_text_queue.get_nowait()
-            handle_recognized_text(text)
-    except Exception as e:
-        print(f"Error while draining recognized text queue: {e}")
-
-
-def main() -> None:
-    """Main application function (UI + high-level state)."""
-    # Apply any pending updates coming from the background audio thread
-    _drain_queues()
-
-    # Ensure backend components exist so the command catalog can be shown
-    initialize_components()
-
-    # Header
-    st.title("🎤 Nova AI Voice Control Assistant")
-    st.markdown("---")
-    
-    # Sidebar for controls
-    with st.sidebar:
-        st.header("⚙️ Controls")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("▶️ Start", use_container_width=True):
-                start_listening()
-        
-        with col2:
-            if st.button("⏹️ Stop", use_container_width=True):
-                stop_listening()
-        
-        if st.button("🗑️ Clear History", use_container_width=True):
-            st.session_state.conversation_history = []
-            st.session_state.last_response = ""
-            if st.session_state.groq_client:
-                st.session_state.groq_client.reset_conversation()
-            st.success("History cleared!")
-        
-        st.markdown("---")
-        st.header("📋 Available Commands")
-        handler: CommandHandler | None = st.session_state.command_handler
-        if handler is not None:
-            catalog = handler.get_command_catalog()
-            current_category = None
-            for entry in catalog:
-                category = entry.get("category", "Other")
-                if category != current_category:
-                    if current_category is not None:
-                        st.markdown("---")
-                    st.markdown(f"**{category}**")
-                    current_category = category
-                name = entry.get("name", "")
-                desc = entry.get("description", "")
-                st.markdown(f"- **{name}**: {desc}")
-                for ex in entry.get("examples", []):
-                    st.markdown(f'  - "{ex}"')
-        else:
-            st.info("Commands will appear here once Nova is initialized.")
-    
-    # Main content area
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        # Status display
-        st.subheader("📊 Status")
-        status_class = "status-box"
-        if "listening" in st.session_state.status.lower():
-            status_class += " status-listening"
-        elif "processing" in st.session_state.status.lower() or "thinking" in st.session_state.status.lower():
-            status_class += " status-processing"
-        elif "responding" in st.session_state.status.lower():
-            status_class += " status-responding"
-        elif "error" in st.session_state.status.lower():
-            status_class += " status-error"
-        
-        st.markdown(
-            f'<div class="{status_class}">'
-            f'<h3>{st.session_state.status}</h3>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-        
-        # Response display
-        st.subheader("💬 Response")
-        st.markdown(
-            f'<div class="response-box">{st.session_state.last_response or "Waiting for your command..."}</div>',
-            unsafe_allow_html=True
-        )
-    
-    with col2:
-        st.subheader("📝 Conversation History")
-        if st.session_state.conversation_history:
-            # Show last 5 conversations
-            for i, msg in enumerate(st.session_state.conversation_history[-10:]):
-                if msg["role"] == "user":
-                    st.markdown(f"**You** ({msg['timestamp']}):")
-                    st.markdown(f"*{msg['text']}*")
-                else:
-                    st.markdown(f"**Nova AI** ({msg['timestamp']}):")
-                    st.markdown(msg['text'])
-                st.markdown("---")
-        else:
-            st.info("No conversation history yet.")
-    
-    # Auto-refresh to keep polling the background queues while listening
-    if st.session_state.listening:
-        st.session_state.refresh_counter += 1
-        # Refresh every 1–2 seconds to keep status and conversation live
-        time.sleep(1.5)
-        st.rerun()
-
-
-if __name__ == "__main__":
-    main()
-
-# Remove all the old Urdu code that was here
-# The following was removed and replaced with simple English responses above
-                    if lang == "urdu":
-                        response = f"Ji boss, abhi ka time hai: {cmd_result}"
-                    else:
-                        response = f"Yes boss, the current time is: {cmd_result}"
-                elif any(word in lower_text for word in ["date", "tareekh"]):
-                    if lang == "urdu":
-                        response = f"Ji boss, aaj ki tareekh hai: {cmd_result}"
-                    else:
-                        response = f"Yes boss, today’s date is: {cmd_result}"
-                elif "recycle bin" in lower_text or "kooda" in lower_text or "dustbin" in lower_text:
-                    response = "Ji boss, Recycle Bin khol diya hai." if lang == "urdu" else "Yes boss, I have opened the Recycle Bin."
-                elif "chrome" in lower_text and "close" in lower_text:
-                    response = "Ji boss, Chrome band kar diya hai." if lang == "urdu" else "Yes boss, I have closed Chrome."
-                elif "notepad" in lower_text and "close" in lower_text:
-                    response = "Ji boss, Notepad band kar diya hai." if lang == "urdu" else "Yes boss, I have closed Notepad."
-                elif "chrome" in lower_text:
-                    response = "Ji boss, Google Chrome khol diya hai." if lang == "urdu" else "Yes boss, I have opened Google Chrome."
-                elif "notepad" in lower_text:
-                    response = "Ji boss, Notepad khol diya hai." if lang == "urdu" else "Yes boss, I have opened Notepad."
-                elif "youtube" in lower_text:
-                    response = (
-                        "Ji boss, YouTube par aapki command ke mutabiq search kar raha hoon."
-                        if lang == "urdu"
-                        else "Yes boss, I am searching on YouTube as you requested."
-                    )
-                elif "google" in lower_text:
-                    response = (
-                        "Ji boss, Google par aapka search chala diya hai."
-                        if lang == "urdu"
-                        else "Yes boss, I have run your search on Google."
-                    )
-                elif any(phrase in lower_text for phrase in ["select everything", "select all", "sab select karo"]):
-                    response = (
-                        "Ji boss, current window mein sab select kar diya hai."
-                        if lang == "urdu"
-                        else "Yes boss, I have selected everything in the current window."
-                    )
-                elif any(
-                    phrase in lower_text
-                    for phrase in ["delete this", "ye delete karo", "delete everything", "sab delete karo"]
-                ):
-                    response = (
-                        "Ji boss, jo cheezen select theen unko delete kar diya hai."
-                        if lang == "urdu"
-                        else "Yes boss, I have deleted the selected items."
-                    )
-                elif any(
-                    phrase in lower_text
-                    for phrase in [
-                        "chrome par",
-                        "chrome pe",
-                        "browser par",
-                        "browser pe",
-                    ]
-                ):
-                    response = (
-                        "Ji boss, current browser window mein aapka search chala diya hai."
-                        if lang == "urdu"
-                        else "Yes boss, I have run your search in the current browser window."
-                    )
-                else:
-                    # Generic acknowledgement for any other handled command
-                    if lang == "urdu":
-                        response = f"Ji boss, aapka command execute kar diya: {cmd_result}"
-                    else:
-                        response = f"Yes boss, I have executed your command: {cmd_result}"
-        except Exception as e:
-            response = f"Sorry boss, command chalate hue koi masla aa gaya: {e}"
-
-    # --- 3. Check for search commands (handle before other processing) ---
-    if response is None and "search" in lower_text:
-        try:
-            handler: CommandHandler = st.session_state.command_handler
-            if handler:
-                # Let command handler process the search command
-                cmd_result = handler.process_command(text)
-                if cmd_result and "search" in cmd_result.lower():
-                    response = cmd_result
-        except Exception as e:
-            response = f"Error processing search command: {str(e)}"
-    
-    # --- 4. If still not handled, use Groq for conversation (English only) ---
-    if response is None:
-        if st.session_state.groq_client is not None:
-            safe_update_status("thinking")
-            try:
-                # Use English-only mode
-                response = st.session_state.groq_client.chat_as_atlas(
-                    text, language_mode="english"
-                )
-
-                # If the user asked to "write" or "generate" content,
-                # also type the generated text directly into the active window.
-                if any(
-                    phrase in lower_text
-                    for phrase in [
-                        "write ",
-                        "generate ",
-                        "create a paragraph",
-                        "create paragraph",
-                        "type ",
-                    ]
-                ) and st.session_state.command_handler is not None:
-                    try:
-                        handler_for_typing: CommandHandler = st.session_state.command_handler
-                        handler_for_typing.desktop.type_text_in_active_window(response)
-                    except Exception as e:
-                        print(f"Error while typing generated content: {e}")
-            except Exception as e:
-                response = f"Error communicating with AI: {str(e)}"
-        else:
-            response = (
-                "The Groq AI client is not configured. "
-                "Please set GROQ_API_KEY in the `.env` file."
-            )
-
-    # 5. Record assistant response (English only)
-    st.session_state.conversation_history.append(
-        {
-            "role": "assistant",
-            "text": response,
-            "timestamp": time.strftime("%H:%M:%S"),
-        }
-    )
-
-    st.session_state.last_response = response
-    safe_update_status("responding")
-
-    # 4. Speak the response (non-blocking thread inside TextToSpeech)
-    if st.session_state.tts:
-        try:
-            st.session_state.tts.speak(response)
-        except Exception as e:
-            # Log to terminal but keep UI alive
-            print(f"Error during text-to-speech: {e}")
-
-    # 5. Return to listening or idle
     time.sleep(0.2)
     if st.session_state.listening:
         safe_update_status("listening")
@@ -1024,12 +732,10 @@ def main() -> None:
         else:
             st.info("Commands will appear here once Nova is initialized.")
     
-    # Main content area
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        # Status display
-        st.subheader("📊 Status")
+    # --- Voice Control section ---
+    st.subheader("🎤 Voice Control")
+    col_voice_1, col_voice_2 = st.columns([2, 1])
+    with col_voice_1:
         status_class = "status-box"
         if "listening" in st.session_state.status.lower():
             status_class += " status-listening"
@@ -1039,40 +745,55 @@ def main() -> None:
             status_class += " status-responding"
         elif "error" in st.session_state.status.lower():
             status_class += " status-error"
-        
         st.markdown(
             f'<div class="{status_class}">'
             f'<h3>{st.session_state.status}</h3>'
             f'</div>',
             unsafe_allow_html=True
         )
-        
-        # Response display
         st.subheader("💬 Response")
         st.markdown(
             f'<div class="response-box">{st.session_state.last_response or "Waiting for your command..."}</div>',
             unsafe_allow_html=True
         )
-    
-    with col2:
-        st.subheader("📝 Conversation History")
-        if st.session_state.conversation_history:
-            # Show last 5 conversations
-            for i, msg in enumerate(st.session_state.conversation_history[-10:]):
-                if msg["role"] == "user":
-                    st.markdown(f"**You** ({msg['timestamp']}):")
-                    st.markdown(f"*{msg['text']}*")
-                else:
-                    st.markdown(f"**Nova AI** ({msg['timestamp']}):")
-                    st.markdown(msg['text'])
-                st.markdown("---")
-        else:
-            st.info("No conversation history yet.")
-    
+    with col_voice_2:
+        st.markdown("Use **Start** in the sidebar to control Nova by voice. Same actions can be run via text chat below.")
+
+    # --- Text Chat section: persistent history + typed commands ---
+    st.markdown('<div class="chat-section">', unsafe_allow_html=True)
+    st.subheader("💬 Text Chat")
+    st.caption("Type a command below to run the same actions as voice (open apps, type text, save files, search, etc.). Nova will confirm verbally.")
+    history = st.session_state.conversation_history
+    if history:
+        # Chronological log with Voice/Text badge
+        buf = []
+        buf.append('<div class="chat-history-container">')
+        for msg in history:
+            role = msg.get("role", "user")
+            text = msg.get("text", "")
+            ts = msg.get("timestamp", "")
+            src = msg.get("source", "voice")
+            esc = html_module.escape(str(text)).replace("\n", "<br/>")
+            badge_class = "chat-msg-badge-voice" if src == "voice" else "chat-msg-badge-text"
+            badge_label = "Voice" if src == "voice" else "Text"
+            if role == "user":
+                buf.append(f'<div class="chat-msg chat-msg-user"><span class="chat-msg-badge {badge_class}">{badge_label}</span><br/>{esc}<div class="chat-msg-time">{ts}</div></div>')
+            else:
+                buf.append(f'<div class="chat-msg chat-msg-assistant"><span class="chat-msg-badge {badge_class}">{badge_label}</span><br/>{esc}<div class="chat-msg-time">{ts}</div></div>')
+        buf.append("</div>")
+        st.markdown("".join(buf), unsafe_allow_html=True)
+    else:
+        st.info("No conversation history yet. Speak or type a command to start.")
+    user_text = st.chat_input("Type a command (e.g. open Notepad and type Hello then save on Desktop as report)")
+    if user_text and user_text.strip():
+        initialize_components()
+        handle_recognized_text(user_text.strip(), source="text")
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
     # Auto-refresh to keep polling the background queues while listening
     if st.session_state.listening:
         st.session_state.refresh_counter += 1
-        # Refresh every 1–2 seconds to keep status and conversation live
         time.sleep(1.5)
         st.rerun()
 
